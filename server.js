@@ -6,36 +6,34 @@ const app = express();
 const PORT = process.env.PORT || 3000;
 const DIR = path.dirname(fileURLToPath(import.meta.url));
 
+const VERSION = "0.5.0";
+const NOMINATIM = "https://nominatim.openstreetmap.org";
+
 app.use(express.json());
 
-const VERSION = "0.4.0";
-
-function distanceKm(a, b, c, d) {
+function distanceKm(lat1, lon1, lat2, lon2) {
   const R = 6371;
-  const x = (c - a) * Math.PI / 180;
-  const y = (d - b) * Math.PI / 180;
+  const dLat = (lat2 - lat1) * Math.PI / 180;
+  const dLon = (lon2 - lon1) * Math.PI / 180;
 
-  const q =
-    Math.sin(x / 2) ** 2 +
-    Math.cos(a * Math.PI / 180) *
-    Math.cos(c * Math.PI / 180) *
-    Math.sin(y / 2) ** 2;
+  const a =
+    Math.sin(dLat / 2) ** 2 +
+    Math.cos(lat1 * Math.PI / 180) *
+    Math.cos(lat2 * Math.PI / 180) *
+    Math.sin(dLon / 2) ** 2;
 
   return R * 2 * Math.atan2(
-    Math.sqrt(q),
-    Math.sqrt(1 - q)
+    Math.sqrt(a),
+    Math.sqrt(1 - a)
   );
 }
 
-async function nominatim(q, limit = 10) {
+async function nominatimSearch(query, limit = 10) {
   const url =
-    "https://nominatim.openstreetmap.org/search" +
-    "?format=jsonv2" +
+    `${NOMINATIM}/search?format=jsonv2` +
     `&limit=${limit}` +
-    "&addressdetails=1" +
-    "&extratags=1" +
-    "&namedetails=1" +
-    `&q=${encodeURIComponent(q)}`;
+    "&addressdetails=1&extratags=1&namedetails=1" +
+    `&q=${encodeURIComponent(query)}`;
 
   const r = await fetch(url, {
     headers: {
@@ -49,103 +47,43 @@ async function nominatim(q, limit = 10) {
   return r.json();
 }
 
-async function wikipediaSearch(query, limit = 10) {
-  const url =
-    "https://es.wikipedia.org/w/api.php" +
-    "?action=query" +
-    "&format=json" +
-    "&origin=*" +
-    "&prop=coordinates|pageprops|extracts" +
-    "&exintro=1" +
-    "&explaintext=1" +
-    "&redirects=1" +
-    `&generator=search&gsrlimit=${limit}` +
-    `&gsrsearch=${encodeURIComponent(query)}`;
-
-  const r = await fetch(url, {
-    headers: {
-      "User-Agent": `RI-Audio-Guia/${VERSION}`
-    }
-  });
-
-  if (!r.ok) return [];
-
-  const data = await r.json();
-
-  return Object.values(data.query?.pages || {});
-}
-
-function badTouristName(name) {
-  return /metro de |s\.?\s?a\.?$|empresa|oficina|parking|aparcamiento|gasolinera|hospital|clínica|supermercado|estación de servicio/i.test(
-    name
-  );
-}
-
-function osmPlace(p, category, lat, lon) {
+function makePlace(p, category, centerLat, centerLon) {
   const name =
     p.namedetails?.["name:es"] ||
     p.namedetails?.name ||
     p.name ||
     p.display_name?.split(",")[0];
 
-  const plat = Number(p.lat);
-  const plon = Number(p.lon);
+  const lat = Number(p.lat);
+  const lon = Number(p.lon);
 
   if (
     !name ||
-    !Number.isFinite(plat) ||
-    !Number.isFinite(plon)
+    !Number.isFinite(lat) ||
+    !Number.isFinite(lon)
   ) return null;
 
   const distance = distanceKm(
+    centerLat,
+    centerLon,
     lat,
-    lon,
-    plat,
-    plon
+    lon
   );
 
   if (distance > 20) return null;
 
-  if (
-    category === "visit" &&
-    badTouristName(name)
-  ) return null;
-
-  let score = 100 - distance;
-
-  const text =
-    `${name} ${p.type || ""} ${p.class || ""}`
-      .toLowerCase();
-
-  if (p.extratags?.wikipedia) score += 180;
-  if (p.extratags?.wikidata) score += 100;
-
-  if (
-    /catedral|cathedral|palacio|palace|alcazaba|castillo|castle|basílica|basilica/.test(text)
-  ) score += 120;
-
-  if (/museo|museum/.test(text)) score += 80;
-
-  if (
-    /monumento|monument|historic|histórico|teatro|theatre|parque|park|plaza/.test(text)
-  ) score += 55;
-
-  if (
-    /placa|cementerio|busto|memorial/.test(text)
-  ) score -= 200;
-
   return {
     name,
-    lat: plat,
-    lon: plon,
+    lat,
+    lon,
     category,
-    score,
     wikipedia: p.extratags?.wikipedia || "",
-    description: p.extratags?.description || ""
+    description: p.extratags?.description || "",
+    distance
   };
 }
 
-async function osmSearch(
+async function searchMany(
   queries,
   category,
   lat,
@@ -155,80 +93,20 @@ async function osmSearch(
 
   for (const q of queries) {
     try {
-      const data = await nominatim(q, 10);
+      const data = await nominatimSearch(q, 10);
 
       for (const p of data) {
-        const x = osmPlace(
+        const item = makePlace(
           p,
           category,
           lat,
           lon
         );
 
-        if (x) result.push(x);
+        if (item) result.push(item);
       }
     } catch (e) {
-      console.error(e);
-    }
-  }
-
-  return result;
-}
-
-async function wikiTourism(city, lat, lon) {
-  const searches = [
-    `"${city}" monumento`,
-    `"${city}" museo`,
-    `"${city}" palacio`,
-    `"${city}" turismo`
-  ];
-
-  const result = [];
-
-  for (const q of searches) {
-    try {
-      const pages = await wikipediaSearch(q, 10);
-
-      for (const page of pages) {
-        const coord = page.coordinates?.[0];
-
-        if (!coord) continue;
-
-        const d = distanceKm(
-          lat,
-          lon,
-          coord.lat,
-          coord.lon
-        );
-
-        if (d > 20) continue;
-        if (badTouristName(page.title)) continue;
-
-        let score = 250 - d;
-
-        const text =
-          `${page.title} ${page.extract || ""}`
-            .toLowerCase();
-
-        if (
-          /catedral|palacio|alcazaba|castillo|basílica/.test(text)
-        ) score += 100;
-
-        if (/museo/.test(text)) score += 70;
-        if (/monumento/.test(text)) score += 60;
-
-        result.push({
-          name: page.title,
-          lat: coord.lat,
-          lon: coord.lon,
-          category: "visit",
-          score,
-          wikipedia: `es:${page.title}`,
-          description: page.extract || ""
-        });
-      }
-    } catch (e) {
-      console.error(e);
+      console.error(q, e.message);
     }
   }
 
@@ -238,18 +116,122 @@ async function wikiTourism(city, lat, lon) {
 function unique(list) {
   const seen = new Set();
 
-  return list
-    .sort((a, b) => b.score - a.score)
-    .filter(p => {
-      const key = p.name
-        .toLowerCase()
-        .replace(/[^\p{L}\p{N}]/gu, "");
+  return list.filter(p => {
+    const key = p.name
+      .toLowerCase()
+      .normalize("NFD")
+      .replace(/[\u0300-\u036f]/g, "")
+      .replace(/[^\p{L}\p{N}]/gu, "");
 
-      if (seen.has(key)) return false;
+    if (seen.has(key)) return false;
 
-      seen.add(key);
-      return true;
-    });
+    seen.add(key);
+    return true;
+  });
+}
+
+async function resolveNamedPlaces(
+  names,
+  city,
+  country,
+  category,
+  lat,
+  lon
+) {
+  const result = [];
+
+  for (const name of names) {
+    try {
+      const data = await nominatimSearch(
+        `${name}, ${city}, ${country}`,
+        5
+      );
+
+      const candidates = data
+        .map(p =>
+          makePlace(
+            p,
+            category,
+            lat,
+            lon
+          )
+        )
+        .filter(Boolean)
+        .sort(
+          (a, b) =>
+            a.distance - b.distance
+        );
+
+      if (candidates[0]) {
+        result.push(candidates[0]);
+      }
+    } catch (e) {
+      console.error(name, e.message);
+    }
+  }
+
+  return unique(result);
+}
+
+/*
+  Curaduría especial para ciudades conocidas.
+
+  Esto evita que una búsqueda genérica coloque
+  museos secundarios, empresas o estaciones
+  por delante de los iconos reales de la ciudad.
+
+  Más ciudades podrán añadirse progresivamente.
+*/
+const CURATED = {
+  madrid: {
+    essentials: [
+      "Puerta del Sol",
+      "Palacio Real de Madrid",
+      "Catedral de la Almudena",
+      "Plaza Mayor",
+      "Fuente de Cibeles",
+      "Gran Vía",
+      "Banco de España",
+      "Plaza de España",
+      "Templo de Debod",
+      "Parque del Retiro"
+    ],
+
+    museums: [
+      "Museo del Prado",
+      "Museo Nacional Centro de Arte Reina Sofía",
+      "Museo Thyssen-Bornemisza",
+      "Museo Arqueológico Nacional",
+      "Museo Cerralbo"
+    ],
+
+    shopping: [
+      "Gran Vía",
+      "Calle de Preciados",
+      "Calle de Serrano",
+      "Barrio de Salamanca",
+      "El Rastro"
+    ],
+
+    markets: [
+      "Mercado de San Miguel"
+    ],
+
+    malls: [
+      "Príncipe Pío",
+      "La Vaguada",
+      "ABC Serrano",
+      "Plaza Río 2"
+    ]
+  }
+};
+
+function cityKey(city) {
+  return city
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .trim();
 }
 
 app.get("/api/places", async (req, res) => {
@@ -267,8 +249,7 @@ app.get("/api/places", async (req, res) => {
 
   try {
     const reverse = await fetch(
-      "https://nominatim.openstreetmap.org/reverse" +
-      `?format=jsonv2&lat=${lat}&lon=${lon}`,
+      `${NOMINATIM}/reverse?format=jsonv2&lat=${lat}&lon=${lon}`,
       {
         headers: {
           "Accept-Language": "es",
@@ -291,133 +272,169 @@ app.get("/api/places", async (req, res) => {
     const country =
       rd.address?.country || "";
 
-    const location = `${city}, ${country}`;
+    const curated =
+      CURATED[cityKey(city)];
 
-    const [
-      wiki,
-      osm,
-      streets,
-      markets,
-      malls
-    ] = await Promise.all([
-      wikiTourism(city, lat, lon),
+    let essentials = [];
+    let museums = [];
+    let shopping = [];
+    let markets = [];
+    let malls = [];
 
-      osmSearch(
-        [
-          `atracción turística ${location}`,
-          `monumento ${location}`,
-          `museo ${location}`,
-          `palacio ${location}`,
-          `catedral ${location}`
-        ],
-        "visit",
+    if (curated) {
+      essentials = await resolveNamedPlaces(
+        curated.essentials,
+        city,
+        country,
+        "essential",
         lat,
         lon
-      ),
+      );
 
-      osmSearch(
-        [
-          `calle comercial ${location}`,
-          `zona comercial ${location}`,
-          `shopping street ${location}`
-        ],
+      museums = await resolveNamedPlaces(
+        curated.museums,
+        city,
+        country,
+        "museum",
+        lat,
+        lon
+      );
+
+      shopping = await resolveNamedPlaces(
+        curated.shopping,
+        city,
+        country,
         "shopping",
         lat,
         lon
-      ),
+      );
 
-      osmSearch(
-        [
-          `mercado municipal ${location}`,
-          `mercado central ${location}`,
-          `mercado de abastos ${location}`
-        ],
+      markets = await resolveNamedPlaces(
+        curated.markets,
+        city,
+        country,
         "market",
         lat,
         lon
-      ),
+      );
 
-      osmSearch(
-        [
-          `centro comercial ${location}`,
-          `shopping centre ${location}`,
-          `shopping mall ${location}`
-        ],
+      malls = await resolveNamedPlaces(
+        curated.malls,
+        city,
+        country,
         "mall",
         lat,
         lon
-      )
-    ]);
+      );
+    } else {
+      essentials = unique(
+        await searchMany(
+          [
+            `monumentos principales ${city}, ${country}`,
+            `lugares emblemáticos ${city}, ${country}`,
+            `plazas famosas ${city}, ${country}`,
+            `atracciones turísticas ${city}, ${country}`
+          ],
+          "essential",
+          lat,
+          lon
+        )
+      ).slice(0, 10);
 
-    const tourist = unique([
-      ...wiki,
-      ...osm
-    ]);
+      museums = unique(
+        await searchMany(
+          [
+            `museos ${city}, ${country}`
+          ],
+          "museum",
+          lat,
+          lon
+        )
+      ).slice(0, 5);
 
-    const shopping = unique(streets);
-    const market = unique(markets);
-    const shoppingCenters = unique(malls)
-      .slice(0, 5);
+      shopping = unique(
+        await searchMany(
+          [
+            `calle comercial ${city}, ${country}`,
+            `zona de compras ${city}, ${country}`
+          ],
+          "shopping",
+          lat,
+          lon
+        )
+      ).slice(0, 5);
 
-    const final = [];
-    const used = new Set();
+      markets = unique(
+        await searchMany(
+          [
+            `mercado municipal ${city}, ${country}`,
+            `mercado central ${city}, ${country}`
+          ],
+          "market",
+          lat,
+          lon
+        )
+      ).slice(0, 3);
 
-    function add(p) {
-      if (!p) return;
-
-      const key = p.name.toLowerCase();
-
-      if (used.has(key)) return;
-
-      used.add(key);
-      final.push(p);
+      malls = unique(
+        await searchMany(
+          [
+            `centro comercial ${city}, ${country}`
+          ],
+          "mall",
+          lat,
+          lon
+        )
+      ).slice(0, 5);
     }
 
-    // Los imprescindibles turísticos primero.
-    for (const p of tourist) {
-      if (final.length >= 8) break;
-      add(p);
-    }
+    /*
+      Si una ciudad curada devuelve algún resultado
+      incompleto, completamos solamente los huecos.
+    */
+    if (essentials.length < 10) {
+      const extra = await searchMany(
+        [
+          `lugares emblemáticos ${city}, ${country}`,
+          `monumentos ${city}, ${country}`,
+          `atracciones turísticas ${city}, ${country}`
+        ],
+        "essential",
+        lat,
+        lon
+      );
 
-    // Garantizamos mercado principal.
-    add(market[0]);
-
-    // Garantizamos calle/zona de compras.
-    add(shopping[0]);
-
-    // Completamos hasta 10 si fuese necesario.
-    for (const p of [
-      ...tourist,
-      ...market,
-      ...shopping
-    ]) {
-      if (final.length >= 10) break;
-      add(p);
+      essentials = unique([
+        ...essentials,
+        ...extra
+      ]).slice(0, 10);
     }
 
     return res.json({
       version: VERSION,
       city,
-      places: final
+
+      places: essentials
         .slice(0, 10)
         .map((p, i) => ({
           ...p,
           order: i + 1
         })),
 
-      shoppingCenters: shoppingCenters.map(
-        (p, i) => ({
-          ...p,
-          order: i + 1
-        })
-      )
+      museums: museums.slice(0, 5),
+
+      shoppingAreas: shopping.slice(0, 5),
+
+      markets: markets.slice(0, 3),
+
+      shoppingCenters: malls.slice(0, 5)
     });
   } catch (error) {
     console.error(error);
 
-    res.status(500).json({
+    return res.status(500).json({
       error:
-        "No se pudieron obtener los lugares"
+        "No se pudieron obtener los datos de la ciudad"
     });
   }
 });
@@ -433,8 +450,7 @@ app.get("/api/wiki", async (req, res) => {
 
   try {
     const r = await fetch(
-      "https://es.wikipedia.org/api/rest_v1/page/summary/" +
-      encodeURIComponent(title),
+      `https://es.wikipedia.org/api/rest_v1/page/summary/${encodeURIComponent(title)}`,
       {
         headers: {
           "User-Agent": `RI-Audio-Guia/${VERSION}`
@@ -448,11 +464,11 @@ app.get("/api/wiki", async (req, res) => {
 
     const data = await r.json();
 
-    res.json({
+    return res.json({
       extract: data.extract || ""
     });
   } catch {
-    res.json({ extract: "" });
+    return res.json({ extract: "" });
   }
 });
 
