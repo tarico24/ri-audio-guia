@@ -5,7 +5,7 @@ import "leaflet/dist/leaflet.css";
 import "./style.css";
 
 const NOMINATIM = "https://nominatim.openstreetmap.org";
-const VERSION = "0.6.0";
+const VERSION = "0.6.3";
 const DATE = "13/09/2026";
 const AUTHOR = "Ricardo Julián";
 
@@ -28,8 +28,12 @@ function App() {
   const [msg, setMsg] = useState("¿Qué ciudad quieres descubrir?");
   const [activeTab, setActiveTab] = useState("resumen");
   const [map, setMap] = useState(null);
+  const [loading, setLoading] = useState(false);
 
   const mapRef = useRef(null);
+  const requestRef = useRef(null);
+  const searchNumberRef = useRef(0);
+  const layersRef = useRef(null);
 
   useEffect(() => {
     navigator.serviceWorker?.register("/sw.js");
@@ -38,7 +42,11 @@ function App() {
   useEffect(() => {
     if (!city || !mapRef.current) return;
 
-    if (map) map.remove();
+    if (map) {
+      try {
+        map.remove();
+      } catch {}
+    }
 
     const m = L.map(mapRef.current, {
       zoomControl: true
@@ -52,21 +60,34 @@ function App() {
       }
     ).addTo(m);
 
+    layersRef.current = L.layerGroup().addTo(m);
+
     setMap(m);
 
+    setTimeout(() => {
+      try {
+        m.invalidateSize();
+      } catch {}
+    }, 100);
+
     return () => {
-      m.remove();
+      try {
+        m.remove();
+      } catch {}
     };
   }, [city]);
 
   useEffect(() => {
-    if (!map || !places.length) return;
+    if (!map || !layersRef.current) return;
+
+    const layer = layersRef.current;
+    layer.clearLayers();
 
     const route = [];
 
     places.forEach((p, i) => {
       addMarker(
-        map,
+        layer,
         p,
         COLORS.essential,
         String(i + 1),
@@ -79,7 +100,7 @@ function App() {
 
     museums.forEach(p =>
       addMarker(
-        map,
+        layer,
         p,
         COLORS.museum,
         "🏛",
@@ -89,7 +110,7 @@ function App() {
 
     shoppingCenters.forEach(p =>
       addMarker(
-        map,
+        layer,
         p,
         COLORS.mall,
         "🛍",
@@ -99,7 +120,7 @@ function App() {
 
     shoppingAreas.forEach(p =>
       addMarker(
-        map,
+        layer,
         p,
         COLORS.shopping,
         "▣",
@@ -109,7 +130,7 @@ function App() {
 
     markets.forEach(p =>
       addMarker(
-        map,
+        layer,
         p,
         COLORS.market,
         "🛒",
@@ -122,12 +143,17 @@ function App() {
         weight: 4,
         opacity: 0.8,
         color: "#159ddd"
-      }).addTo(map);
+      }).addTo(layer);
 
       map.fitBounds(route, {
         padding: [35, 35],
         maxZoom: 15
       });
+    } else if (city) {
+      map.setView(
+        [city.lat, city.lon],
+        14
+      );
     }
   }, [
     map,
@@ -146,6 +172,13 @@ function App() {
     popup,
     round = false
   ) {
+    if (
+      !Number.isFinite(Number(p.lat)) ||
+      !Number.isFinite(Number(p.lon))
+    ) {
+      return;
+    }
+
     const icon = L.divIcon({
       className: "ri-marker-wrapper",
       html: `
@@ -158,28 +191,106 @@ function App() {
       iconAnchor: [18, 18]
     });
 
-    L.marker([p.lat, p.lon], { icon })
+    L.marker(
+      [Number(p.lat), Number(p.lon)],
+      { icon }
+    )
       .addTo(target)
       .bindPopup(popup);
   }
 
-  async function loadPlaces(c) {
+  function cancelPreviousRequest() {
+    if (requestRef.current) {
+      try {
+        requestRef.current.abort();
+      } catch {}
+    }
+
+    requestRef.current = null;
+  }
+
+  async function fetchWithTimeout(
+    url,
+    timeout = 8000
+  ) {
+    cancelPreviousRequest();
+
+    const controller = new AbortController();
+    requestRef.current = controller;
+
+    const timer = setTimeout(() => {
+      controller.abort();
+    }, timeout);
+
+    try {
+      return await fetch(url, {
+        signal: controller.signal,
+        headers: {
+          "Accept-Language": "es"
+        }
+      });
+    } finally {
+      clearTimeout(timer);
+
+      if (requestRef.current === controller) {
+        requestRef.current = null;
+      }
+    }
+  }
+
+  function clearCityData() {
     setPlaces([]);
     setMuseums([]);
     setShoppingCenters([]);
     setShoppingAreas([]);
     setMarkets([]);
+  }
 
-    setMsg("Preparando tu audioguía…");
+  async function loadPlaces(c, searchNumber) {
+    clearCityData();
+
+    setMsg(`Preparando ${c.shortName}…`);
 
     try {
-      const r = await fetch(
-        `/api/places?lat=${c.lat}&lon=${c.lon}`
+      const r = await fetchWithTimeout(
+        `/api/places?lat=${encodeURIComponent(c.lat)}&lon=${encodeURIComponent(c.lon)}&city=${encodeURIComponent(c.shortName)}`,
+        10000
       );
 
-      if (!r.ok) throw new Error("Servidor");
+      if (searchNumber !== searchNumberRef.current) {
+        return;
+      }
+
+      if (!r.ok) {
+        throw new Error("Servidor");
+      }
 
       const data = await r.json();
+
+      if (searchNumber !== searchNumberRef.current) {
+        return;
+      }
+
+      /*
+        Si el servidor conoce un centro mejor,
+        lo utilizamos para el mapa.
+      */
+
+      if (
+        data.center &&
+        Number.isFinite(Number(data.center.lat)) &&
+        Number.isFinite(Number(data.center.lon))
+      ) {
+        setCity(old => {
+          if (!old) return old;
+
+          return {
+            ...old,
+            lat: Number(data.center.lat),
+            lon: Number(data.center.lon)
+          };
+        });
+      }
 
       setPlaces(data.places || []);
       setMuseums(data.museums || []);
@@ -187,96 +298,230 @@ function App() {
       setShoppingAreas(data.shoppingAreas || []);
       setMarkets(data.markets || []);
 
-      setMsg(
-        data.places?.length
-          ? `${data.places.length} imprescindibles preparados`
-          : "Necesitamos mejorar la selección de esta ciudad"
-      );
+      if (data.places?.length) {
+        setMsg(
+          `${data.places.length} imprescindibles preparados`
+        );
+      } else {
+        setMsg(
+          `Todavía no disponemos de una selección completa para ${c.shortName}.`
+        );
+      }
     } catch (e) {
-      console.error(e);
-      setMsg("No se han podido cargar los datos de la ciudad.");
+      if (searchNumber !== searchNumberRef.current) {
+        return;
+      }
+
+      if (e?.name === "AbortError") {
+        setMsg(
+          `La búsqueda de ${c.shortName} ha tardado demasiado. Puedes buscar otra ciudad.`
+        );
+      } else {
+        console.error(e);
+
+        setMsg(
+          `No se han podido cargar los lugares de ${c.shortName}. Puedes buscar otra ciudad.`
+        );
+      }
+    } finally {
+      if (searchNumber === searchNumberRef.current) {
+        setLoading(false);
+      }
     }
   }
 
   async function search() {
-    if (!q.trim()) return;
+    const query = q.trim();
 
-    setMsg("Buscando ciudad…");
+    if (!query || loading) {
+      /*
+        Aunque una búsqueda esté cargando,
+        permitimos una nueva: la anterior se cancela.
+      */
+      if (!query) return;
+    }
+
+    const searchNumber =
+      ++searchNumberRef.current;
+
+    cancelPreviousRequest();
+    setLoading(true);
+    clearCityData();
+
+    setMsg(`Buscando ${query}…`);
 
     try {
-      const r = await fetch(
-        `${NOMINATIM}/search?format=jsonv2&limit=5&addressdetails=1&q=${encodeURIComponent(q)}`,
-        {
-          headers: {
-            "Accept-Language": "es"
-          }
-        }
+      const r = await fetchWithTimeout(
+        `${NOMINATIM}/search?format=jsonv2&limit=5&addressdetails=1&featuretype=city&q=${encodeURIComponent(query)}`,
+        7000
       );
 
-      const data = await r.json();
-
-      if (!data.length) {
-        setMsg("No encuentro esa ciudad.");
+      if (searchNumber !== searchNumberRef.current) {
         return;
       }
 
-      const x = data[0];
+      if (!r.ok) {
+        throw new Error("Búsqueda");
+      }
+
+      const data = await r.json();
+
+      if (searchNumber !== searchNumberRef.current) {
+        return;
+      }
+
+      if (!data.length) {
+        setMsg(`No encuentro "${query}".`);
+        setLoading(false);
+        return;
+      }
+
+      /*
+        Priorizamos ciudades, pueblos y municipios.
+      */
+
+      const x =
+        data.find(item =>
+          [
+            "city",
+            "town",
+            "municipality",
+            "village"
+          ].includes(item.addresstype)
+        ) || data[0];
+
+      const shortName =
+        x.address?.city ||
+        x.address?.town ||
+        x.address?.municipality ||
+        x.address?.village ||
+        x.name ||
+        x.display_name.split(",")[0];
 
       const c = {
         name: x.display_name,
-        shortName: x.display_name.split(",")[0],
+        shortName,
         lat: Number(x.lat),
         lon: Number(x.lon)
       };
 
       setCity(c);
       remember(c.name);
-      await loadPlaces(c);
-    } catch {
-      setMsg("No se ha podido realizar la búsqueda.");
+
+      await loadPlaces(
+        c,
+        searchNumber
+      );
+    } catch (e) {
+      if (searchNumber !== searchNumberRef.current) {
+        return;
+      }
+
+      if (e?.name === "AbortError") {
+        setMsg(
+          `La búsqueda de "${query}" ha tardado demasiado. Inténtalo de nuevo.`
+        );
+      } else {
+        console.error(e);
+        setMsg(
+          `No se ha podido buscar "${query}".`
+        );
+      }
+
+      setLoading(false);
     }
   }
 
   function locate() {
+    const searchNumber =
+      ++searchNumberRef.current;
+
+    cancelPreviousRequest();
+    setLoading(true);
+    clearCityData();
+
     setMsg("Localizando…");
 
     navigator.geolocation?.getCurrentPosition(
       async pos => {
+        if (
+          searchNumber !==
+          searchNumberRef.current
+        ) {
+          return;
+        }
+
         try {
           const lat = pos.coords.latitude;
           const lon = pos.coords.longitude;
 
-          const r = await fetch(
+          const r = await fetchWithTimeout(
             `${NOMINATIM}/reverse?format=jsonv2&lat=${lat}&lon=${lon}`,
-            {
-              headers: {
-                "Accept-Language": "es"
-              }
-            }
+            7000
           );
+
+          if (
+            searchNumber !==
+            searchNumberRef.current
+          ) {
+            return;
+          }
 
           const x = await r.json();
 
+          const shortName =
+            x.address?.city ||
+            x.address?.town ||
+            x.address?.municipality ||
+            x.address?.village ||
+            x.display_name?.split(",")[0] ||
+            "Mi ubicación";
+
           const c = {
-            name: x.display_name,
-            shortName:
-              x.address?.city ||
-              x.address?.town ||
-              x.address?.municipality ||
-              x.display_name.split(",")[0],
+            name: x.display_name || shortName,
+            shortName,
             lat,
             lon
           };
 
           setCity(c);
           remember(c.name);
-          await loadPlaces(c);
-        } catch {
-          setMsg("No he podido identificar la ciudad.");
+
+          await loadPlaces(
+            c,
+            searchNumber
+          );
+        } catch (e) {
+          if (
+            searchNumber !==
+            searchNumberRef.current
+          ) {
+            return;
+          }
+
+          setMsg(
+            "No he podido identificar tu ubicación."
+          );
+
+          setLoading(false);
         }
       },
-      () => setMsg("No se ha podido acceder a tu ubicación."),
-      { enableHighAccuracy: true }
+      () => {
+        if (
+          searchNumber ===
+          searchNumberRef.current
+        ) {
+          setMsg(
+            "No se ha podido acceder a tu ubicación."
+          );
+
+          setLoading(false);
+        }
+      },
+      {
+        enableHighAccuracy: true,
+        timeout: 10000
+      }
     );
   }
 
@@ -285,7 +530,10 @@ function App() {
       localStorage.getItem("riHistory") || "[]"
     );
 
-    h = [name, ...h.filter(x => x !== name)].slice(0, 5);
+    h = [
+      name,
+      ...h.filter(x => x !== name)
+    ].slice(0, 5);
 
     localStorage.setItem(
       "riHistory",
@@ -296,37 +544,58 @@ function App() {
   async function speak(p) {
     speechSynthesis.cancel();
 
-    setMsg(`Preparando audioguía: ${p.name}`);
+    setMsg(
+      `Preparando audioguía: ${p.name}`
+    );
 
     let text = p.description || "";
 
     if (p.wikipedia) {
       try {
         const title = p.wikipedia.includes(":")
-          ? p.wikipedia.split(":").slice(1).join(":")
+          ? p.wikipedia
+              .split(":")
+              .slice(1)
+              .join(":")
           : p.wikipedia;
 
-        const r = await fetch(
-          `/api/wiki?title=${encodeURIComponent(title)}`
+        const controller =
+          new AbortController();
+
+        const timer = setTimeout(
+          () => controller.abort(),
+          6000
         );
+
+        const r = await fetch(
+          `/api/wiki?title=${encodeURIComponent(title)}`,
+          { signal: controller.signal }
+        );
+
+        clearTimeout(timer);
 
         const data = await r.json();
 
-        if (data.extract) text = data.extract;
+        if (data.extract) {
+          text = data.extract;
+        }
       } catch {}
     }
 
     if (!text) {
       text =
-        `${p.name}. Este lugar está incluido en RI Audio Guía. ` +
-        `La información turística ampliada para este punto está en preparación.`;
+        `${p.name}. Este lugar forma parte de RI Audio Guía. ` +
+        `Estamos preparando una explicación turística ampliada para este punto.`;
     }
 
-    const u = new SpeechSynthesisUtterance(text);
+    const u =
+      new SpeechSynthesisUtterance(text);
+
     u.lang = "es-ES";
     u.rate = 0.95;
 
-    const voices = speechSynthesis.getVoices();
+    const voices =
+      speechSynthesis.getVoices();
 
     const voice =
       voices.find(
@@ -334,9 +603,13 @@ function App() {
           v.lang === "es-ES" &&
           /Jorge|Pablo|Daniel/i.test(v.name)
       ) ||
-      voices.find(v => v.lang === "es-ES");
+      voices.find(
+        v => v.lang === "es-ES"
+      );
 
-    if (voice) u.voice = voice;
+    if (voice) {
+      u.voice = voice;
+    }
 
     u.onstart = () =>
       setMsg(`Reproduciendo: ${p.name}`);
@@ -389,9 +662,12 @@ function App() {
 
           <input
             value={q}
-            onChange={e => setQ(e.target.value)}
+            onChange={e =>
+              setQ(e.target.value)
+            }
             onKeyDown={e =>
-              e.key === "Enter" && search()
+              e.key === "Enter" &&
+              search()
             }
             placeholder="¿Qué ciudad quieres descubrir?"
           />
@@ -410,7 +686,7 @@ function App() {
           className="search-btn"
           onClick={search}
         >
-          Buscar
+          {loading ? "Cambiar ciudad" : "Buscar"}
         </button>
 
         <button
@@ -423,25 +699,47 @@ function App() {
 
       <nav className="tabs">
         <button
-          className={activeTab === "resumen" ? "active" : ""}
-          onClick={() => scrollTo("resumen")}
+          className={
+            activeTab === "resumen"
+              ? "active"
+              : ""
+          }
+          onClick={() =>
+            scrollTo("resumen")
+          }
         >
           🗺 Resumen
         </button>
 
-        <button onClick={() => scrollTo("ruta")}>
+        <button
+          onClick={() =>
+            scrollTo("ruta")
+          }
+        >
           ⤴ Ruta
         </button>
 
-        <button onClick={() => scrollTo("lugares")}>
+        <button
+          onClick={() =>
+            scrollTo("lugares")
+          }
+        >
           📍 Lugares
         </button>
 
-        <button onClick={() => scrollTo("museos")}>
+        <button
+          onClick={() =>
+            scrollTo("museos")
+          }
+        >
           🏛 Museos
         </button>
 
-        <button onClick={() => scrollTo("compras")}>
+        <button
+          onClick={() =>
+            scrollTo("compras")
+          }
+        >
           🛍 Compras
         </button>
 
@@ -456,17 +754,23 @@ function App() {
 
       {!city ? (
         <section className="welcome">
-          <div className="welcome-icon">🎧</div>
+          <div className="welcome-icon">
+            🎧
+          </div>
 
           <h1>RI Audio Guía</h1>
 
           <p>
-            Busca una ciudad y descubre sus lugares
-            imprescindibles, museos, compras y mercados.
+            Busca una ciudad y descubre
+            sus lugares imprescindibles,
+            museos, compras y mercados.
           </p>
         </section>
       ) : (
-        <div id="resumen" className="city-layout">
+        <div
+          id="resumen"
+          className="city-layout"
+        >
           <section className="main-column">
             <div className="city-title-mobile">
               <h1>{cityName}</h1>
@@ -517,7 +821,8 @@ function App() {
               <div>
                 <h1>{cityName}</h1>
                 <p>
-                  Historia, cultura y vida en cada esquina
+                  Historia, cultura y vida
+                  en cada esquina
                 </p>
               </div>
             </div>
@@ -527,7 +832,8 @@ function App() {
               className="essentials-panel"
             >
               <h2>
-                10 imprescindibles de {cityName}
+                10 imprescindibles de{" "}
+                {cityName}
               </h2>
 
               <div className="essential-list">
@@ -541,15 +847,21 @@ function App() {
                     </span>
 
                     <div className="essential-text">
-                      <strong>{p.name}</strong>
+                      <strong>
+                        {p.name}
+                      </strong>
+
                       <small>
-                        Imprescindible para conocer la ciudad
+                        Imprescindible para
+                        conocer la ciudad
                       </small>
                     </div>
 
                     <button
                       className="audio-btn"
-                      onClick={() => speak(p)}
+                      onClick={() =>
+                        speak(p)
+                      }
                     >
                       ▶ Audio
                     </button>
@@ -558,8 +870,9 @@ function App() {
 
                 {!places.length && (
                   <div className="empty">
-                    Estamos mejorando la selección
-                    de esta ciudad.
+                    {loading
+                      ? "Preparando la ciudad…"
+                      : "Estamos mejorando la selección de esta ciudad."}
                   </div>
                 )}
               </div>
@@ -569,10 +882,15 @@ function App() {
               id="ruta"
               className="route-card"
             >
-              <div className="route-icon">🚶</div>
+              <div className="route-icon">
+                🚶
+              </div>
 
               <div>
-                <strong>Ruta optimizada</strong>
+                <strong>
+                  Ruta optimizada
+                </strong>
+
                 <small>
                   {places.length} paradas
                 </small>
@@ -583,8 +901,13 @@ function App() {
                   map &&
                   places.length &&
                   map.fitBounds(
-                    places.map(p => [p.lat, p.lon]),
-                    { padding: [30, 30] }
+                    places.map(p => [
+                      p.lat,
+                      p.lon
+                    ]),
+                    {
+                      padding: [30, 30]
+                    }
                   )
                 }
               >
@@ -597,13 +920,19 @@ function App() {
 
       <footer>
         <div>
-          🎧 <strong>RI Audio Guía</strong>
-          <span> · Descubre cada ciudad a tu ritmo</span>
+          🎧{" "}
+          <strong>RI Audio Guía</strong>
+          <span>
+            {" "}
+            · Descubre cada ciudad a tu
+            ritmo
+          </span>
         </div>
 
         <div>
-          Versión {VERSION} · {DATE} · {AUTHOR} ·
-          Datos cartográficos © OpenStreetMap
+          Versión {VERSION} · {DATE} ·{" "}
+          {AUTHOR} · Datos cartográficos
+          © OpenStreetMap
         </div>
       </footer>
     </div>
@@ -658,7 +987,9 @@ function CategoryCard({
               {audio && (
                 <button
                   className="mini-audio"
-                  onClick={() => onAudio(p)}
+                  onClick={() =>
+                    onAudio(p)
+                  }
                 >
                   ▶ Audio
                 </button>
