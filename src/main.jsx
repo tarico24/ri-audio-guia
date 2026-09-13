@@ -5,7 +5,10 @@ import "leaflet/dist/leaflet.css";
 import "./style.css";
 
 const NOMINATIM = "https://nominatim.openstreetmap.org";
-const OVERPASS = "https://overpass-api.de/api/interpreter";
+const OVERPASS_SERVERS = [
+  "https://overpass.private.coffee/api/interpreter",
+  "https://overpass-api.de/api/interpreter"
+];
 const WIKI = "https://es.wikipedia.org/api/rest_v1/page/summary/";
 const esc = encodeURIComponent;
 
@@ -101,13 +104,26 @@ function App(){
       nwr(around:9000,${c.lat},${c.lon})["place"="square"]["name"];
     );out center tags;`;
     try{
-      const r=await fetch(OVERPASS,{
-        method:"POST",
-        headers:{"Content-Type":"application/x-www-form-urlencoded;charset=UTF-8"},
-        body:`data=${encodeURIComponent(query)}`
-      });
-      if(!r.ok)throw new Error();
-      const data=await r.json();
+      let data=null;
+      for (const endpoint of OVERPASS_SERVERS) {
+        const controller=new AbortController();
+        const timer=setTimeout(()=>controller.abort(),12000);
+        try {
+          const r=await fetch(endpoint,{
+            method:"POST",
+            headers:{"Content-Type":"application/x-www-form-urlencoded;charset=UTF-8"},
+            body:`data=${encodeURIComponent(query)}`,
+            signal:controller.signal
+          });
+          clearTimeout(timer);
+          if(!r.ok)continue;
+          data=await r.json();
+          if(data?.elements?.length)break;
+        } catch(e) {
+          clearTimeout(timer);
+        }
+      }
+      if(!data?.elements?.length)throw new Error("Sin resultados");
       const seen=new Set();
       const candidates=data.elements.map(x=>{
         const t=x.tags||{}, name=t["name:es"]||t.name;
