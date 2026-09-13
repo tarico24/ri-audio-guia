@@ -1,13 +1,21 @@
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import L from "leaflet";
 import "leaflet/dist/leaflet.css";
 import "./style.css";
 
 const NOMINATIM = "https://nominatim.openstreetmap.org";
-const VERSION = "0.5.0";
+const VERSION = "0.6.0";
 const DATE = "13/09/2026";
 const AUTHOR = "Ricardo Julián";
+
+const COLORS = {
+  essential: "#18bfe8",
+  museum: "#8b3dff",
+  mall: "#ef3340",
+  shopping: "#f59e0b",
+  market: "#16a34a"
+};
 
 function App() {
   const [q, setQ] = useState("");
@@ -17,31 +25,38 @@ function App() {
   const [shoppingCenters, setShoppingCenters] = useState([]);
   const [shoppingAreas, setShoppingAreas] = useState([]);
   const [markets, setMarkets] = useState([]);
-  const [msg, setMsg] = useState(
-    "Busca una ciudad o utiliza tu ubicación."
-  );
+  const [msg, setMsg] = useState("¿Qué ciudad quieres descubrir?");
+  const [activeTab, setActiveTab] = useState("resumen");
   const [map, setMap] = useState(null);
+
+  const mapRef = useRef(null);
 
   useEffect(() => {
     navigator.serviceWorker?.register("/sw.js");
   }, []);
 
   useEffect(() => {
-    if (!city) return;
+    if (!city || !mapRef.current) return;
 
     if (map) map.remove();
 
-    const m = L.map("map").setView(
-      [city.lat, city.lon],
-      14
-    );
+    const m = L.map(mapRef.current, {
+      zoomControl: true
+    }).setView([city.lat, city.lon], 14);
 
     L.tileLayer(
       "https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png",
-      { attribution: "© OpenStreetMap" }
+      {
+        attribution: "© OpenStreetMap",
+        maxZoom: 19
+      }
     ).addTo(m);
 
     setMap(m);
+
+    return () => {
+      m.remove();
+    };
   }, [city]);
 
   useEffect(() => {
@@ -49,130 +64,103 @@ function App() {
 
     const route = [];
 
-    // 10 IMPRESCINDIBLES - AZUL
     places.forEach((p, i) => {
-      const icon = L.divIcon({
-        className: "",
-        html: `
-          <div style="
-            background:#0ea5e9;
-            color:white;
-            width:32px;
-            height:32px;
-            border-radius:50%;
-            display:flex;
-            align-items:center;
-            justify-content:center;
-            font-weight:800;
-            border:3px solid white;
-            box-shadow:0 2px 7px #0008;
-          ">${i + 1}</div>
-        `,
-        iconSize: [32, 32],
-        iconAnchor: [16, 16]
-      });
-
-      L.marker([p.lat, p.lon], { icon })
-        .addTo(map)
-        .bindPopup(`${i + 1}. ${p.name}`);
+      addMarker(
+        map,
+        p,
+        COLORS.essential,
+        String(i + 1),
+        `${i + 1}. ${p.name}`,
+        true
+      );
 
       route.push([p.lat, p.lon]);
     });
 
+    museums.forEach(p =>
+      addMarker(
+        map,
+        p,
+        COLORS.museum,
+        "🏛",
+        `Museo: ${p.name}`
+      )
+    );
+
+    shoppingCenters.forEach(p =>
+      addMarker(
+        map,
+        p,
+        COLORS.mall,
+        "🛍",
+        `Centro comercial: ${p.name}`
+      )
+    );
+
+    shoppingAreas.forEach(p =>
+      addMarker(
+        map,
+        p,
+        COLORS.shopping,
+        "▣",
+        `Zona de compras: ${p.name}`
+      )
+    );
+
+    markets.forEach(p =>
+      addMarker(
+        map,
+        p,
+        COLORS.market,
+        "🛒",
+        `Mercado: ${p.name}`
+      )
+    );
+
     if (route.length > 1) {
       L.polyline(route, {
         weight: 4,
-        opacity: 0.7
+        opacity: 0.8,
+        color: "#159ddd"
       }).addTo(map);
 
       map.fitBounds(route, {
-        padding: [35, 35]
+        padding: [35, 35],
+        maxZoom: 15
       });
     }
-
-    // MUSEOS - MORADO
-    museums.forEach(p => {
-      addCategoryMarker(
-        map,
-        p,
-        "#7c3aed",
-        "🏛️",
-        "Museo"
-      );
-    });
-
-    // CENTROS COMERCIALES - ROJO
-    shoppingCenters.forEach(p => {
-      addCategoryMarker(
-        map,
-        p,
-        "#dc2626",
-        "🛍",
-        "Centro comercial"
-      );
-    });
-
-    // CALLES/ZONAS DE COMPRAS - NARANJA
-    shoppingAreas.forEach(p => {
-      addCategoryMarker(
-        map,
-        p,
-        "#f59e0b",
-        "🛍",
-        "Zona de compras"
-      );
-    });
-
-    // MERCADOS - VERDE
-    markets.forEach(p => {
-      addCategoryMarker(
-        map,
-        p,
-        "#16a34a",
-        "🛒",
-        "Mercado"
-      );
-    });
   }, [
+    map,
     places,
     museums,
     shoppingCenters,
     shoppingAreas,
-    markets,
-    map
+    markets
   ]);
 
-  function addCategoryMarker(
-    targetMap,
+  function addMarker(
+    target,
     p,
     color,
-    symbol,
-    label
+    text,
+    popup,
+    round = false
   ) {
     const icon = L.divIcon({
-      className: "",
+      className: "ri-marker-wrapper",
       html: `
-        <div style="
-          background:${color};
-          color:white;
-          width:34px;
-          height:34px;
-          border-radius:8px;
-          display:flex;
-          align-items:center;
-          justify-content:center;
-          font-size:17px;
-          border:3px solid white;
-          box-shadow:0 2px 7px #0008;
-        ">${symbol}</div>
+        <div class="ri-marker ${round ? "round" : ""}"
+             style="background:${color}">
+          ${text}
+        </div>
       `,
-      iconSize: [34, 34],
-      iconAnchor: [17, 17]
+      iconSize: [36, 36],
+      iconAnchor: [18, 18]
     });
 
     L.marker([p.lat, p.lon], { icon })
-      .addTo(targetMap)
-      .bindPopup(`${label}: ${p.name}`);
+      .addTo(target)
+      .bindPopup(popup);
   }
 
   async function loadPlaces(c) {
@@ -182,9 +170,7 @@ function App() {
     setShoppingAreas([]);
     setMarkets([]);
 
-    setMsg(
-      "Preparando la guía de la ciudad…"
-    );
+    setMsg("Preparando tu audioguía…");
 
     try {
       const r = await fetch(
@@ -197,30 +183,18 @@ function App() {
 
       setPlaces(data.places || []);
       setMuseums(data.museums || []);
-      setShoppingCenters(
-        data.shoppingCenters || []
-      );
-      setShoppingAreas(
-        data.shoppingAreas || []
-      );
+      setShoppingCenters(data.shoppingCenters || []);
+      setShoppingAreas(data.shoppingAreas || []);
       setMarkets(data.markets || []);
 
-      if (!data.places?.length) {
-        setMsg(
-          "No se han encontrado suficientes lugares."
-        );
-        return;
-      }
-
       setMsg(
-        `${data.places.length} lugares imprescindibles seleccionados.`
+        data.places?.length
+          ? `${data.places.length} imprescindibles preparados`
+          : "Necesitamos mejorar la selección de esta ciudad"
       );
     } catch (e) {
       console.error(e);
-
-      setMsg(
-        "No se han podido cargar los datos de la ciudad."
-      );
+      setMsg("No se han podido cargar los datos de la ciudad.");
     }
   }
 
@@ -239,17 +213,18 @@ function App() {
         }
       );
 
-      const d = await r.json();
+      const data = await r.json();
 
-      if (!d.length) {
+      if (!data.length) {
         setMsg("No encuentro esa ciudad.");
         return;
       }
 
-      const x = d[0];
+      const x = data[0];
 
       const c = {
         name: x.display_name,
+        shortName: x.display_name.split(",")[0],
         lat: Number(x.lat),
         lon: Number(x.lon)
       };
@@ -258,20 +233,21 @@ function App() {
       remember(c.name);
       await loadPlaces(c);
     } catch {
-      setMsg(
-        "No se ha podido realizar la búsqueda."
-      );
+      setMsg("No se ha podido realizar la búsqueda.");
     }
   }
 
   function locate() {
-    setMsg("Solicitando tu ubicación…");
+    setMsg("Localizando…");
 
     navigator.geolocation?.getCurrentPosition(
-      async p => {
+      async pos => {
         try {
+          const lat = pos.coords.latitude;
+          const lon = pos.coords.longitude;
+
           const r = await fetch(
-            `${NOMINATIM}/reverse?format=jsonv2&lat=${p.coords.latitude}&lon=${p.coords.longitude}`,
+            `${NOMINATIM}/reverse?format=jsonv2&lat=${lat}&lon=${lon}`,
             {
               headers: {
                 "Accept-Language": "es"
@@ -283,23 +259,23 @@ function App() {
 
           const c = {
             name: x.display_name,
-            lat: p.coords.latitude,
-            lon: p.coords.longitude
+            shortName:
+              x.address?.city ||
+              x.address?.town ||
+              x.address?.municipality ||
+              x.display_name.split(",")[0],
+            lat,
+            lon
           };
 
           setCity(c);
           remember(c.name);
           await loadPlaces(c);
         } catch {
-          setMsg(
-            "He obtenido tu posición, pero no la ciudad."
-          );
+          setMsg("No he podido identificar la ciudad.");
         }
       },
-      () =>
-        setMsg(
-          "No se ha podido acceder a tu ubicación."
-        ),
+      () => setMsg("No se ha podido acceder a tu ubicación."),
       { enableHighAccuracy: true }
     );
   }
@@ -309,10 +285,7 @@ function App() {
       localStorage.getItem("riHistory") || "[]"
     );
 
-    h = [
-      name,
-      ...h.filter(x => x !== name)
-    ].slice(0, 5);
+    h = [name, ...h.filter(x => x !== name)].slice(0, 5);
 
     localStorage.setItem(
       "riHistory",
@@ -323,19 +296,14 @@ function App() {
   async function speak(p) {
     speechSynthesis.cancel();
 
-    setMsg(
-      `Preparando audioguía de ${p.name}…`
-    );
+    setMsg(`Preparando audioguía: ${p.name}`);
 
     let text = p.description || "";
 
     if (p.wikipedia) {
       try {
         const title = p.wikipedia.includes(":")
-          ? p.wikipedia
-              .split(":")
-              .slice(1)
-              .join(":")
+          ? p.wikipedia.split(":").slice(1).join(":")
           : p.wikipedia;
 
         const r = await fetch(
@@ -344,26 +312,21 @@ function App() {
 
         const data = await r.json();
 
-        if (data.extract) {
-          text = data.extract;
-        }
+        if (data.extract) text = data.extract;
       } catch {}
     }
 
     if (!text) {
       text =
-        `${p.name}. Este lugar forma parte de la selección de RI Audio Guía. ` +
-        `Todavía no disponemos de una explicación histórica suficientemente verificada para este punto.`;
+        `${p.name}. Este lugar está incluido en RI Audio Guía. ` +
+        `La información turística ampliada para este punto está en preparación.`;
     }
 
-    const u =
-      new SpeechSynthesisUtterance(text);
-
+    const u = new SpeechSynthesisUtterance(text);
     u.lang = "es-ES";
     u.rate = 0.95;
 
-    const voices =
-      speechSynthesis.getVoices();
+    const voices = speechSynthesis.getVoices();
 
     const voice =
       voices.find(
@@ -371,280 +334,348 @@ function App() {
           v.lang === "es-ES" &&
           /Jorge|Pablo|Daniel/i.test(v.name)
       ) ||
-      voices.find(
-        v => v.lang === "es-ES"
-      );
+      voices.find(v => v.lang === "es-ES");
 
     if (voice) u.voice = voice;
 
     u.onstart = () =>
-      setMsg(
-        `Reproduciendo: ${p.name}`
-      );
+      setMsg(`Reproduciendo: ${p.name}`);
 
     u.onend = () =>
-      setMsg("Audioguía finalizada.");
+      setMsg("Audioguía finalizada");
 
     speechSynthesis.speak(u);
   }
 
-  const hist = JSON.parse(
-    localStorage.getItem("riHistory") || "[]"
-  );
+  function scrollTo(id) {
+    setActiveTab(id);
+
+    document
+      .getElementById(id)
+      ?.scrollIntoView({
+        behavior: "smooth",
+        block: "start"
+      });
+  }
+
+  const cityName =
+    city?.shortName ||
+    city?.name?.split(",")[0] ||
+    "";
 
   return (
-    <main>
-      <header>
-        <div className="brand">
-          RI <span>Audio Guía</span>
+    <div className="app-shell">
+      <header className="topbar">
+        <div className="logo">
+          <span className="ri">RI</span>
+          <span className="headphones">🎧</span>
+          <strong>Audio Guía</strong>
         </div>
 
-        <div className="tag">
+        <div className="slogan">
           Descubre cada ciudad a tu ritmo
+        </div>
+
+        <div className="top-actions">
+          <span>♡ Mis ciudades</span>
+          <span>⚙ Ajustes</span>
+          <span>🇪🇸 ES</span>
         </div>
       </header>
 
-      <section className="search">
-        <input
-          value={q}
-          onChange={e =>
-            setQ(e.target.value)
-          }
-          onKeyDown={e =>
-            e.key === "Enter" && search()
-          }
-          placeholder="¿Qué ciudad quieres descubrir?"
-        />
+      <section className="searchbar">
+        <div className="search-input">
+          <span>⌕</span>
 
-        <button onClick={search}>
+          <input
+            value={q}
+            onChange={e => setQ(e.target.value)}
+            onKeyDown={e =>
+              e.key === "Enter" && search()
+            }
+            placeholder="¿Qué ciudad quieres descubrir?"
+          />
+
+          {q && (
+            <button
+              className="clear"
+              onClick={() => setQ("")}
+            >
+              ×
+            </button>
+          )}
+        </div>
+
+        <button
+          className="search-btn"
+          onClick={search}
+        >
           Buscar
         </button>
 
         <button
-          className="loc"
+          className="location-btn"
           onClick={locate}
         >
-          ◎ Usar mi ubicación
+          📍 Usar mi ubicación
         </button>
       </section>
 
-      <p className="status">
+      <nav className="tabs">
+        <button
+          className={activeTab === "resumen" ? "active" : ""}
+          onClick={() => scrollTo("resumen")}
+        >
+          🗺 Resumen
+        </button>
+
+        <button onClick={() => scrollTo("ruta")}>
+          ⤴ Ruta
+        </button>
+
+        <button onClick={() => scrollTo("lugares")}>
+          📍 Lugares
+        </button>
+
+        <button onClick={() => scrollTo("museos")}>
+          🏛 Museos
+        </button>
+
+        <button onClick={() => scrollTo("compras")}>
+          🛍 Compras
+        </button>
+
+        <button>
+          ♧ Consejos
+        </button>
+      </nav>
+
+      <div className="statusline">
         {msg}
-      </p>
+      </div>
 
-      {!city && hist.length > 0 && (
-        <section>
-          <h2>Ciudades recientes</h2>
+      {!city ? (
+        <section className="welcome">
+          <div className="welcome-icon">🎧</div>
 
-          {hist.map(x => (
-            <div
-              className="history"
-              key={x}
-            >
-              {x}
-            </div>
-          ))}
+          <h1>RI Audio Guía</h1>
+
+          <p>
+            Busca una ciudad y descubre sus lugares
+            imprescindibles, museos, compras y mercados.
+          </p>
         </section>
-      )}
+      ) : (
+        <div id="resumen" className="city-layout">
+          <section className="main-column">
+            <div className="city-title-mobile">
+              <h1>{cityName}</h1>
+            </div>
 
-      {city && (
-        <>
-          <h1>
-            {city.name.split(",")[0]}
-          </h1>
+            <div
+              id="map"
+              ref={mapRef}
+              className="map"
+            />
 
-          <div id="map"></div>
+            <div className="category-grid">
+              <CategoryCard
+                id="museos"
+                title="Museos principales"
+                subtitle="Arte, historia y cultura"
+                icon="🏛"
+                color={COLORS.museum}
+                items={museums}
+                onAudio={speak}
+                audio
+              />
 
-          <section>
-            <h2>
-              ⭐ 10 imprescindibles
-            </h2>
+              <CategoryCard
+                id="compras"
+                title="Centros comerciales"
+                subtitle="Compras y ocio"
+                icon="🛍"
+                color={COLORS.mall}
+                items={shoppingCenters}
+              />
 
-            {places.map((p, i) => (
-              <article
-                key={`essential-${p.name}-${i}`}
-              >
-                <b>{i + 1}</b>
-
-                <div>
-                  <strong>
-                    {p.name}
-                  </strong>
-
-                  <small>
-                    Imprescindible para conocer la ciudad
-                  </small>
-                </div>
-
-                <button
-                  onClick={() => speak(p)}
-                >
-                  ▶ Audio
-                </button>
-              </article>
-            ))}
+              <CategoryCard
+                title="Zonas y calles de compras"
+                subtitle="Pasea, compra y disfruta"
+                icon="▣"
+                color={COLORS.shopping}
+                items={[
+                  ...shoppingAreas,
+                  ...markets
+                ].slice(0, 6)}
+              />
+            </div>
           </section>
 
-          {museums.length > 0 && (
-            <section>
-              <h2 style={{ color: "#7c3aed" }}>
-                🏛️ Museos principales
+          <aside className="side-column">
+            <div className="city-hero">
+              <div>
+                <h1>{cityName}</h1>
+                <p>
+                  Historia, cultura y vida en cada esquina
+                </p>
+              </div>
+            </div>
+
+            <section
+              id="lugares"
+              className="essentials-panel"
+            >
+              <h2>
+                10 imprescindibles de {cityName}
               </h2>
 
-              {museums.map((p, i) => (
-                <article
-                  key={`museum-${p.name}-${i}`}
-                  style={{
-                    borderLeft:
-                      "5px solid #7c3aed"
-                  }}
-                >
-                  <b
-                    style={{
-                      background: "#7c3aed"
-                    }}
+              <div className="essential-list">
+                {places.map((p, i) => (
+                  <div
+                    className="essential-item"
+                    key={`${p.name}-${i}`}
                   >
-                    🏛️
-                  </b>
+                    <span className="number">
+                      {i + 1}
+                    </span>
 
-                  <div>
-                    <strong>
-                      {p.name}
-                    </strong>
-
-                    <small>
-                      Museo destacado
-                    </small>
-                  </div>
-
-                  <button
-                    onClick={() => speak(p)}
-                  >
-                    ▶ Audio
-                  </button>
-                </article>
-              ))}
-            </section>
-          )}
-
-          {shoppingCenters.length > 0 && (
-            <section>
-              <h2 style={{ color: "#dc2626" }}>
-                🛍 Centros comerciales
-              </h2>
-
-              {shoppingCenters.map(
-                (p, i) => (
-                  <article
-                    key={`mall-${p.name}-${i}`}
-                    style={{
-                      borderLeft:
-                        "5px solid #dc2626"
-                    }}
-                  >
-                    <b
-                      style={{
-                        background: "#dc2626"
-                      }}
-                    >
-                      🛍
-                    </b>
-
-                    <div>
-                      <strong>
-                        {p.name}
-                      </strong>
-
+                    <div className="essential-text">
+                      <strong>{p.name}</strong>
                       <small>
-                        Centro comercial destacado
+                        Imprescindible para conocer la ciudad
                       </small>
                     </div>
-                  </article>
-                )
-              )}
-            </section>
-          )}
 
-          {shoppingAreas.length > 0 && (
-            <section>
-              <h2 style={{ color: "#f59e0b" }}>
-                🛍 Calles y zonas de compras
-              </h2>
-
-              {shoppingAreas.map(
-                (p, i) => (
-                  <article
-                    key={`shopping-${p.name}-${i}`}
-                    style={{
-                      borderLeft:
-                        "5px solid #f59e0b"
-                    }}
-                  >
-                    <b
-                      style={{
-                        background: "#f59e0b"
-                      }}
+                    <button
+                      className="audio-btn"
+                      onClick={() => speak(p)}
                     >
-                      🛍
-                    </b>
-
-                    <div>
-                      <strong>
-                        {p.name}
-                      </strong>
-
-                      <small>
-                        Zona comercial destacada
-                      </small>
-                    </div>
-                  </article>
-                )
-              )}
-            </section>
-          )}
-
-          {markets.length > 0 && (
-            <section>
-              <h2 style={{ color: "#16a34a" }}>
-                🛒 Mercados
-              </h2>
-
-              {markets.map((p, i) => (
-                <article
-                  key={`market-${p.name}-${i}`}
-                  style={{
-                    borderLeft:
-                      "5px solid #16a34a"
-                  }}
-                >
-                  <b
-                    style={{
-                      background: "#16a34a"
-                    }}
-                  >
-                    🛒
-                  </b>
-
-                  <div>
-                    <strong>
-                      {p.name}
-                    </strong>
-
-                    <small>
-                      Mercado destacado de la ciudad
-                    </small>
+                      ▶ Audio
+                    </button>
                   </div>
-                </article>
-              ))}
+                ))}
+
+                {!places.length && (
+                  <div className="empty">
+                    Estamos mejorando la selección
+                    de esta ciudad.
+                  </div>
+                )}
+              </div>
             </section>
-          )}
-        </>
+
+            <section
+              id="ruta"
+              className="route-card"
+            >
+              <div className="route-icon">🚶</div>
+
+              <div>
+                <strong>Ruta optimizada</strong>
+                <small>
+                  {places.length} paradas
+                </small>
+              </div>
+
+              <button
+                onClick={() =>
+                  map &&
+                  places.length &&
+                  map.fitBounds(
+                    places.map(p => [p.lat, p.lon]),
+                    { padding: [30, 30] }
+                  )
+                }
+              >
+                🗺 Ver ruta completa
+              </button>
+            </section>
+          </aside>
+        </div>
       )}
 
       <footer>
-        RI Audio Guía · Versión {VERSION} · {DATE} · {AUTHOR} · Datos cartográficos © OpenStreetMap
+        <div>
+          🎧 <strong>RI Audio Guía</strong>
+          <span> · Descubre cada ciudad a tu ritmo</span>
+        </div>
+
+        <div>
+          Versión {VERSION} · {DATE} · {AUTHOR} ·
+          Datos cartográficos © OpenStreetMap
+        </div>
       </footer>
-    </main>
+    </div>
+  );
+}
+
+function CategoryCard({
+  id,
+  title,
+  subtitle,
+  icon,
+  color,
+  items,
+  onAudio,
+  audio = false
+}) {
+  return (
+    <section
+      id={id}
+      className="category-card"
+      style={{
+        "--category-color": color
+      }}
+    >
+      <div className="category-heading">
+        <span className="category-icon">
+          {icon}
+        </span>
+
+        <div>
+          <h3>{title}</h3>
+          <small>{subtitle}</small>
+        </div>
+      </div>
+
+      <div className="category-items">
+        {items.length ? (
+          items.slice(0, 5).map((p, i) => (
+            <div
+              className="category-item"
+              key={`${title}-${p.name}-${i}`}
+            >
+              <span className="mini-icon">
+                {icon}
+              </span>
+
+              <div>
+                <strong>{p.name}</strong>
+                <small>{subtitle}</small>
+              </div>
+
+              {audio && (
+                <button
+                  className="mini-audio"
+                  onClick={() => onAudio(p)}
+                >
+                  ▶ Audio
+                </button>
+              )}
+            </div>
+          ))
+        ) : (
+          <div className="empty">
+            Información en preparación
+          </div>
+        )}
+      </div>
+
+      <button className="view-all">
+        Ver todos
+      </button>
+    </section>
   );
 }
 
