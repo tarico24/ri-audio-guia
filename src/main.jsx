@@ -371,7 +371,7 @@ function App() {
       )}
 
       <footer>
-        RI Audio Guía · PWA · Datos cartográficos © OpenStreetMap
+        RI Audio Guía · Versión 0.3.0 · 13/09/2026 Ricardo Julian· Datos cartográficos © OpenStreetMap
       </footer>
     </main>
   );
