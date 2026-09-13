@@ -5,12 +5,14 @@ import "leaflet/dist/leaflet.css";
 import "./style.css";
 
 const NOMINATIM = "https://nominatim.openstreetmap.org";
-const esc = encodeURIComponent;
+const VERSION = "0.4.0";
+const DATE = "13/09/2026";
 
 function App() {
   const [q, setQ] = useState("");
   const [city, setCity] = useState(null);
   const [places, setPlaces] = useState([]);
+  const [shoppingCenters, setShoppingCenters] = useState([]);
   const [msg, setMsg] = useState(
     "Busca una ciudad o utiliza tu ubicación."
   );
@@ -32,9 +34,7 @@ function App() {
 
     L.tileLayer(
       "https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png",
-      {
-        attribution: "© OpenStreetMap"
-      }
+      { attribution: "© OpenStreetMap" }
     ).addTo(m);
 
     setMap(m);
@@ -43,17 +43,21 @@ function App() {
   useEffect(() => {
     if (!map || !places.length) return;
 
-    const points = [];
+    const routePoints = [];
 
     places.forEach((p, i) => {
+      const isShopping =
+        p.category === "shopping" ||
+        p.category === "market";
+
       const icon = L.divIcon({
         className: "",
         html: `
           <div style="
-            background:#0ea5e9;
+            background:${isShopping ? "#f59e0b" : "#0ea5e9"};
             color:white;
-            width:30px;
-            height:30px;
+            width:32px;
+            height:32px;
             border-radius:50%;
             display:flex;
             align-items:center;
@@ -61,35 +65,63 @@ function App() {
             font-weight:bold;
             border:3px solid white;
             box-shadow:0 2px 7px #0008;
-          ">
-            ${i + 1}
-          </div>
+          ">${i + 1}</div>
         `,
-        iconSize: [30, 30],
-        iconAnchor: [15, 15]
+        iconSize: [32, 32],
+        iconAnchor: [16, 16]
       });
 
       L.marker([p.lat, p.lon], { icon })
         .addTo(map)
         .bindPopup(`${i + 1}. ${p.name}`);
 
-      points.push([p.lat, p.lon]);
+      routePoints.push([p.lat, p.lon]);
     });
 
-    if (points.length > 1) {
-      L.polyline(points, {
+    if (routePoints.length > 1) {
+      L.polyline(routePoints, {
         weight: 4,
-        opacity: 0.75
+        opacity: 0.7
       }).addTo(map);
+    }
 
-      map.fitBounds(points, {
-        padding: [30, 30]
+    if (shoppingCenters.length) {
+      shoppingCenters.forEach(p => {
+        const icon = L.divIcon({
+          className: "",
+          html: `
+            <div style="
+              background:#dc2626;
+              color:white;
+              width:34px;
+              height:34px;
+              border-radius:8px;
+              display:flex;
+              align-items:center;
+              justify-content:center;
+              font-size:18px;
+              border:3px solid white;
+              box-shadow:0 2px 8px #0008;
+            ">🛍</div>
+          `,
+          iconSize: [34, 34],
+          iconAnchor: [17, 17]
+        });
+
+        L.marker([p.lat, p.lon], { icon })
+          .addTo(map)
+          .bindPopup(`Centro comercial: ${p.name}`);
       });
     }
-  }, [places, map]);
+
+    map.fitBounds(routePoints, {
+      padding: [35, 35]
+    });
+  }, [places, shoppingCenters, map]);
 
   async function loadPlaces(c) {
     setPlaces([]);
+    setShoppingCenters([]);
     setMsg("Seleccionando los lugares imprescindibles…");
 
     try {
@@ -97,22 +129,24 @@ function App() {
         `/api/places?lat=${c.lat}&lon=${c.lon}`
       );
 
-      if (!r.ok) {
-        throw new Error("Error del servidor");
-      }
+      if (!r.ok) throw new Error("Servidor");
 
       const data = await r.json();
 
+      setPlaces(data.places || []);
+      setShoppingCenters(
+        data.shoppingCenters || []
+      );
+
       if (!data.places?.length) {
         setMsg(
-          "No he podido encontrar suficientes lugares turísticos."
+          "No se han encontrado suficientes lugares."
         );
         return;
       }
 
-      setPlaces(data.places);
       setMsg(
-        `${data.places.length} lugares seleccionados.`
+        `${data.places.length} lugares imprescindibles seleccionados.`
       );
     } catch (e) {
       console.error(e);
@@ -129,7 +163,7 @@ function App() {
 
     try {
       const r = await fetch(
-        `${NOMINATIM}/search?format=jsonv2&limit=5&addressdetails=1&q=${esc(q)}`,
+        `${NOMINATIM}/search?format=jsonv2&limit=5&addressdetails=1&q=${encodeURIComponent(q)}`,
         {
           headers: {
             "Accept-Language": "es"
@@ -156,11 +190,13 @@ function App() {
       remember(c.name);
       await loadPlaces(c);
     } catch {
-      setMsg("No se ha podido realizar la búsqueda.");
+      setMsg(
+        "No se ha podido realizar la búsqueda."
+      );
     }
   }
 
-  async function locate() {
+  function locate() {
     setMsg("Solicitando tu ubicación…");
 
     navigator.geolocation?.getCurrentPosition(
@@ -196,9 +232,7 @@ function App() {
         setMsg(
           "No se ha podido acceder a tu ubicación."
         ),
-      {
-        enableHighAccuracy: true
-      }
+      { enableHighAccuracy: true }
     );
   }
 
@@ -227,7 +261,7 @@ function App() {
 
     if (p.wikipedia) {
       try {
-        let title = p.wikipedia.includes(":")
+        const title = p.wikipedia.includes(":")
           ? p.wikipedia.split(":").slice(1).join(":")
           : p.wikipedia;
 
@@ -243,8 +277,8 @@ function App() {
 
     if (!text) {
       text =
-        `${p.name}. Este es uno de los lugares destacados de esta ciudad. ` +
-        `RI Audio Guía está preparando información turística ampliada para este punto.`;
+        `${p.name}. Este lugar forma parte de la selección de RI Audio Guía. ` +
+        `Actualmente no disponemos de información histórica suficientemente verificada para ofrecer una explicación más extensa.`;
     }
 
     const u = new SpeechSynthesisUtterance(text);
@@ -253,15 +287,15 @@ function App() {
 
     const voices = speechSynthesis.getVoices();
 
-    const spanish =
+    const voice =
       voices.find(
         v =>
           v.lang === "es-ES" &&
-          /Jorge|Pablo|Daniel|Spanish/i.test(v.name)
+          /Jorge|Pablo|Daniel/i.test(v.name)
       ) ||
       voices.find(v => v.lang === "es-ES");
 
-    if (spanish) u.voice = spanish;
+    if (voice) u.voice = voice;
 
     u.onstart = () =>
       setMsg(`Reproduciendo: ${p.name}`);
@@ -282,6 +316,7 @@ function App() {
         <div className="brand">
           RI <span>Audio Guía</span>
         </div>
+
         <div className="tag">
           Descubre cada ciudad a tu ritmo
         </div>
@@ -316,10 +351,7 @@ function App() {
           <h2>Ciudades recientes</h2>
 
           {hist.map(x => (
-            <div
-              className="history"
-              key={x}
-            >
+            <div className="history" key={x}>
               {x}
             </div>
           ))}
@@ -328,16 +360,12 @@ function App() {
 
       {city && (
         <>
-          <h1>
-            {city.name.split(",")[0]}
-          </h1>
+          <h1>{city.name.split(",")[0]}</h1>
 
           <div id="map"></div>
 
           <section>
-            <h2>
-              10 lugares para descubrir
-            </h2>
+            <h2>10 lugares para descubrir</h2>
 
             {places.length ? (
               places.map((p, i) => (
@@ -345,12 +373,14 @@ function App() {
                   <b>{i + 1}</b>
 
                   <div>
-                    <strong>
-                      {p.name}
-                    </strong>
+                    <strong>{p.name}</strong>
 
                     <small>
-                      Punto imprescindible · Ruta en el mapa
+                      {p.category === "market"
+                        ? " 🛒 Mercado principal"
+                        : p.category === "shopping"
+                        ? " 🛍 Zona de compras"
+                        : " Punto imprescindible"}
                     </small>
                   </div>
 
@@ -362,16 +392,46 @@ function App() {
                 </article>
               ))
             ) : (
-              <p>
-                Preparando la selección…
-              </p>
+              <p>Preparando la selección…</p>
             )}
           </section>
+
+          {shoppingCenters.length > 0 && (
+            <section>
+              <h2 style={{ color: "#dc2626" }}>
+                🛍 Centros comerciales destacados
+              </h2>
+
+              {shoppingCenters.map((p, i) => (
+                <article
+                  key={`mall-${p.name}-${i}`}
+                  style={{
+                    borderLeft: "5px solid #dc2626"
+                  }}
+                >
+                  <b
+                    style={{
+                      background: "#dc2626"
+                    }}
+                  >
+                    🛍
+                  </b>
+
+                  <div>
+                    <strong>{p.name}</strong>
+                    <small>
+                      Centro comercial destacado
+                    </small>
+                  </div>
+                </article>
+              ))}
+            </section>
+          )}
         </>
       )}
 
       <footer>
-        RI Audio Guía · Versión 0.3.0 · 13/09/2026 Ricardo Julian· Datos cartográficos © OpenStreetMap
+        RI Audio Guía · Versión {VERSION} · {DATE} · Datos cartográficos © OpenStreetMap
       </footer>
     </main>
   );
