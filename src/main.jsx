@@ -431,7 +431,7 @@ function App() {
       )}
 
       <footer>
-        RI Audio Guía · Versión {VERSION} · {DATE} · Datos cartográficos © OpenStreetMap
+        RI Audio Guía · Versión {VERSION} · {DATE} · Ricardo Julian Datos cartográficos © OpenStreetMap
       </footer>
     </main>
   );
