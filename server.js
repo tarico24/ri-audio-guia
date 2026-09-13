@@ -8,67 +8,34 @@ const DIR = path.dirname(fileURLToPath(import.meta.url));
 
 app.use(express.json());
 
-function scorePlace(p) {
-  const type = (p.type || "").toLowerCase();
-  const cls = (p.class || "").toLowerCase();
-  const name = (p.display_name || "").toLowerCase();
+function distanceKm(lat1, lon1, lat2, lon2) {
+  const R = 6371;
+  const dLat = (lat2 - lat1) * Math.PI / 180;
+  const dLon = (lon2 - lon1) * Math.PI / 180;
 
-  let score = 0;
+  const a =
+    Math.sin(dLat / 2) ** 2 +
+    Math.cos(lat1 * Math.PI / 180) *
+    Math.cos(lat2 * Math.PI / 180) *
+    Math.sin(dLon / 2) ** 2;
 
-  if (cls === "tourism") score += 50;
-  if (cls === "historic") score += 70;
-
-  if (
-    type.includes("cathedral") ||
-    name.includes("catedral")
-  ) score += 100;
-
-  if (
-    type.includes("castle") ||
-    name.includes("alcazaba") ||
-    name.includes("castillo")
-  ) score += 90;
-
-  if (
-    type.includes("museum") ||
-    name.includes("museo")
-  ) score += 75;
-
-  if (
-    name.includes("teatro romano") ||
-    name.includes("roman theatre")
-  ) score += 90;
-
-  if (
-    type.includes("monument") ||
-    type.includes("attraction")
-  ) score += 55;
-
-  if (
-    name.includes("plaza") ||
-    name.includes("square")
-  ) score += 25;
-
-  if (
-    name.includes("placa") ||
-    name.includes("cementerio") ||
-    name.includes("busto")
-  ) score -= 100;
-
-  return score;
+  return R * 2 * Math.atan2(
+    Math.sqrt(a),
+    Math.sqrt(1 - a)
+  );
 }
 
 async function nominatimSearch(query, limit = 10) {
   const url =
     "https://nominatim.openstreetmap.org/search" +
     `?format=jsonv2&limit=${limit}` +
-    `&addressdetails=1&extratags=1&namedetails=1` +
+    "&addressdetails=1&extratags=1&namedetails=1" +
     `&q=${encodeURIComponent(query)}`;
 
   const response = await fetch(url, {
     headers: {
       "Accept-Language": "es",
-      "User-Agent": "RI-Audio-Guia/1.0"
+      "User-Agent": "RI-Audio-Guia/0.3.0"
     }
   });
 
@@ -79,10 +46,97 @@ async function nominatimSearch(query, limit = 10) {
   return response.json();
 }
 
+function makePlace(p, category, cityLat, cityLon) {
+  const name =
+    p.namedetails?.["name:es"] ||
+    p.namedetails?.name ||
+    p.name ||
+    p.display_name?.split(",")[0];
+
+  const lat = Number(p.lat);
+  const lon = Number(p.lon);
+
+  if (
+    !name ||
+    !Number.isFinite(lat) ||
+    !Number.isFinite(lon)
+  ) return null;
+
+  const distance = distanceKm(
+    cityLat,
+    cityLon,
+    lat,
+    lon
+  );
+
+  // Nunca admitimos resultados de otra ciudad lejana.
+  if (distance > 20) return null;
+
+  let score = 100 - distance;
+
+  if (p.extratags?.wikipedia) score += 100;
+  if (p.extratags?.wikidata) score += 60;
+
+  const text =
+    `${name} ${p.type || ""} ${p.class || ""}`
+      .toLowerCase();
+
+  if (
+    /catedral|cathedral|alcazaba|palacio|palace|castillo|castle|basílica|basilica/.test(text)
+  ) score += 90;
+
+  if (/museo|museum/.test(text)) score += 65;
+  if (/teatro romano|roman theatre/.test(text)) score += 80;
+  if (/monumento|monument/.test(text)) score += 45;
+
+  if (
+    /placa|cementerio|busto|memorial/.test(text)
+  ) score -= 150;
+
+  return {
+    name,
+    lat,
+    lon,
+    category,
+    score,
+    wikipedia: p.extratags?.wikipedia || "",
+    description: p.extratags?.description || ""
+  };
+}
+
+async function searchCategory(
+  queries,
+  category,
+  cityLat,
+  cityLon
+) {
+  const results = [];
+
+  for (const query of queries) {
+    try {
+      const data = await nominatimSearch(query, 10);
+
+      for (const p of data) {
+        const place = makePlace(
+          p,
+          category,
+          cityLat,
+          cityLon
+        );
+
+        if (place) results.push(place);
+      }
+    } catch (e) {
+      console.error(e);
+    }
+  }
+
+  return results;
+}
+
 app.get("/api/places", async (req, res) => {
   const lat = Number(req.query.lat);
   const lon = Number(req.query.lon);
-  const city = String(req.query.city || "").trim();
 
   if (!Number.isFinite(lat) || !Number.isFinite(lon)) {
     return res.status(400).json({
@@ -91,95 +145,135 @@ app.get("/api/places", async (req, res) => {
   }
 
   try {
-    let cityName = city;
-
-    if (!cityName) {
-      const reverse = await fetch(
-        `https://nominatim.openstreetmap.org/reverse?format=jsonv2&lat=${lat}&lon=${lon}`,
-        {
-          headers: {
-            "Accept-Language": "es",
-            "User-Agent": "RI-Audio-Guia/1.0"
-          }
+    const reverse = await fetch(
+      `https://nominatim.openstreetmap.org/reverse?format=jsonv2&lat=${lat}&lon=${lon}`,
+      {
+        headers: {
+          "Accept-Language": "es",
+          "User-Agent": "RI-Audio-Guia/0.3.0"
         }
-      );
-
-      if (reverse.ok) {
-        const data = await reverse.json();
-
-        cityName =
-          data.address?.city ||
-          data.address?.town ||
-          data.address?.municipality ||
-          data.address?.village ||
-          "";
       }
+    );
+
+    const reverseData = reverse.ok
+      ? await reverse.json()
+      : {};
+
+    const city =
+      reverseData.address?.city ||
+      reverseData.address?.town ||
+      reverseData.address?.municipality ||
+      reverseData.address?.village ||
+      "";
+
+    const country =
+      reverseData.address?.country || "";
+
+    const location = `${city}, ${country}`;
+
+    const tourist = await searchCategory(
+      [
+        `atracciones turísticas ${location}`,
+        `monumentos ${location}`,
+        `museos ${location}`,
+        `lugares históricos ${location}`
+      ],
+      "visit",
+      lat,
+      lon
+    );
+
+    const shopping = await searchCategory(
+      [
+        `calle comercial ${location}`,
+        `shopping street ${location}`,
+        `zona comercial ${location}`
+      ],
+      "shopping",
+      lat,
+      lon
+    );
+
+    const markets = await searchCategory(
+      [
+        `mercado municipal ${location}`,
+        `mercado central ${location}`,
+        `market ${location}`
+      ],
+      "market",
+      lat,
+      lon
+    );
+
+    const unique = list => {
+      const seen = new Set();
+
+      return list
+        .sort((a, b) => b.score - a.score)
+        .filter(p => {
+          const key = p.name.toLowerCase();
+
+          if (seen.has(key)) return false;
+
+          seen.add(key);
+          return true;
+        });
+    };
+
+    const visits = unique(tourist);
+    const shops = unique(shopping);
+    const marketList = unique(markets);
+
+    const final = [];
+    const used = new Set();
+
+    function add(p) {
+      if (!p) return;
+
+      const key = p.name.toLowerCase();
+
+      if (used.has(key)) return;
+
+      used.add(key);
+      final.push(p);
     }
 
-    const searches = [
-      `turismo ${cityName}`,
-      `monumentos ${cityName}`,
-      `museos ${cityName}`,
-      `historic ${cityName}`,
-      `attractions ${cityName}`
-    ];
+    // Reservamos siempre una posición para compras.
+    add(shops[0]);
 
-    const all = [];
+    // Reservamos siempre una posición para mercado.
+    add(marketList[0]);
 
-    for (const query of searches) {
-      try {
-        const results = await nominatimSearch(query, 10);
-        all.push(...results);
-      } catch (e) {
-        console.error(e);
-      }
+    // Completamos hasta 10 con los lugares turísticos.
+    for (const p of visits) {
+      if (final.length >= 10) break;
+      add(p);
     }
 
-    const seen = new Set();
+    // Si faltase alguno, utilizamos más resultados
+    // comerciales o mercados cercanos.
+    for (const p of [...shops, ...marketList]) {
+      if (final.length >= 10) break;
+      add(p);
+    }
 
-    const places = all
-      .map(p => {
-        const name =
-          p.namedetails?.["name:es"] ||
-          p.namedetails?.name ||
-          p.name ||
-          p.display_name?.split(",")[0];
+    const places = final
+      .slice(0, 10)
+      .map((p, i) => ({
+        ...p,
+        order: i + 1
+      }));
 
-        if (!name) return null;
-
-        return {
-          name,
-          lat: Number(p.lat),
-          lon: Number(p.lon),
-          score: scorePlace(p),
-          wikipedia:
-            p.extratags?.wikipedia || "",
-          description:
-            p.extratags?.description || ""
-        };
-      })
-      .filter(p =>
-        p &&
-        Number.isFinite(p.lat) &&
-        Number.isFinite(p.lon)
-      )
-      .sort((a, b) => b.score - a.score)
-      .filter(p => {
-        const key = p.name.toLowerCase();
-
-        if (seen.has(key)) return false;
-
-        seen.add(key);
-        return true;
-      })
-      .slice(0, 10);
-
-    return res.json({ places });
+    return res.json({
+      city,
+      places
+    });
   } catch (error) {
     console.error(error);
 
     return res.status(500).json({
-      error: "No se pudieron obtener los lugares turísticos"
+      error:
+        "No se pudieron obtener los lugares turísticos"
     });
   }
 });
@@ -220,6 +314,6 @@ app.get("/{*splat}", (req, res) => {
 
 app.listen(PORT, "0.0.0.0", () => {
   console.log(
-    `RI Audio Guía funcionando en puerto ${PORT}`
+    `RI Audio Guía v0.3.0 funcionando en puerto ${PORT}`
   );
 });
